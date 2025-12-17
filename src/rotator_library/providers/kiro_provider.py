@@ -518,12 +518,181 @@ class KiroConverter:
 
 
 # =============================================================================
-# KIRO RESPONSE PARSER
+# KIRO RESPONSE PARSER (AWS Event Stream Binary Format)
 # =============================================================================
+
+def find_matching_brace(text: str, start_pos: int) -> int:
+    """Find matching closing brace accounting for nesting and strings."""
+    if start_pos >= len(text) or text[start_pos] != '{':
+        return -1
+    
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    
+    for i in range(start_pos, len(text)):
+        char = text[i]
+        
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+        
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return i
+    
+    return -1
+
+
+class AwsEventStreamParser:
+    """
+    Parser for AWS Event Stream binary format.
+    
+    Kiro returns events in binary SSE format with patterns like:
+    {"content": "text"}
+    {"name": "tool", "toolUseId": "..."}
+    """
+    
+    EVENT_PATTERNS = [
+        ('{"content":', 'content'),
+        ('{"name":', 'tool_start'),
+        ('{"input":', 'tool_input'),
+        ('{"stop":', 'tool_stop'),
+        ('{"usage":', 'usage'),
+        ('{"contextUsagePercentage":', 'context_usage'),
+    ]
+    
+    def __init__(self):
+        self.buffer = ""
+        self.last_content: Optional[str] = None
+        self.current_tool_call: Optional[Dict] = None
+        self.tool_calls: List[Dict] = []
+    
+    def feed(self, chunk: bytes) -> List[Dict]:
+        """Add chunk to buffer and return parsed events."""
+        try:
+            self.buffer += chunk.decode('utf-8', errors='ignore')
+        except Exception:
+            return []
+        
+        events = []
+        
+        while True:
+            earliest_pos = -1
+            earliest_type = None
+            
+            for pattern, event_type in self.EVENT_PATTERNS:
+                pos = self.buffer.find(pattern)
+                if pos != -1 and (earliest_pos == -1 or pos < earliest_pos):
+                    earliest_pos = pos
+                    earliest_type = event_type
+            
+            if earliest_pos == -1:
+                break
+            
+            json_end = find_matching_brace(self.buffer, earliest_pos)
+            if json_end == -1:
+                break  # Incomplete JSON, wait for more data
+            
+            json_str = self.buffer[earliest_pos:json_end + 1]
+            self.buffer = self.buffer[json_end + 1:]
+            
+            try:
+                data = json.loads(json_str)
+                event = self._process_event(data, earliest_type)
+                if event:
+                    events.append(event)
+            except json.JSONDecodeError:
+                lib_logger.debug(f"Failed to parse Kiro JSON: {json_str[:100]}")
+        
+        return events
+    
+    def _process_event(self, data: dict, event_type: str) -> Optional[Dict]:
+        """Process a parsed event."""
+        if event_type == 'content':
+            content = data.get('content', '')
+            if content and content != self.last_content:
+                self.last_content = content
+                return {"type": "content", "data": content}
+        
+        elif event_type == 'tool_start':
+            # Finalize previous tool call if any
+            if self.current_tool_call:
+                self._finalize_tool_call()
+            
+            input_data = data.get('input', '')
+            input_str = json.dumps(input_data) if isinstance(input_data, dict) else str(input_data or '')
+            
+            self.current_tool_call = {
+                "id": data.get('toolUseId', f"call_{uuid.uuid4().hex[:8]}"),
+                "type": "function",
+                "function": {
+                    "name": data.get('name', ''),
+                    "arguments": input_str
+                }
+            }
+            
+            if data.get('stop'):
+                self._finalize_tool_call()
+        
+        elif event_type == 'tool_input':
+            if self.current_tool_call:
+                input_data = data.get('input', '')
+                input_str = json.dumps(input_data) if isinstance(input_data, dict) else str(input_data or '')
+                self.current_tool_call['function']['arguments'] += input_str
+        
+        elif event_type == 'tool_stop':
+            if self.current_tool_call and data.get('stop'):
+                self._finalize_tool_call()
+        
+        elif event_type == 'usage':
+            return {"type": "usage", "data": data.get('usage', 0)}
+        
+        elif event_type == 'context_usage':
+            return {"type": "context_usage", "data": data.get('contextUsagePercentage', 0)}
+        
+        return None
+    
+    def _finalize_tool_call(self):
+        """Finalize current tool call and add to list."""
+        if self.current_tool_call:
+            # Normalize arguments to JSON string
+            args = self.current_tool_call['function']['arguments']
+            if isinstance(args, str) and args.strip():
+                try:
+                    parsed = json.loads(args)
+                    self.current_tool_call['function']['arguments'] = json.dumps(parsed)
+                except json.JSONDecodeError:
+                    self.current_tool_call['function']['arguments'] = "{}"
+            else:
+                self.current_tool_call['function']['arguments'] = "{}"
+            
+            self.tool_calls.append(self.current_tool_call)
+            self.current_tool_call = None
+    
+    def get_tool_calls(self) -> List[Dict]:
+        """Get all collected tool calls, finalizing any pending ones."""
+        if self.current_tool_call:
+            self._finalize_tool_call()
+        return self.tool_calls
+
 
 class KiroStreamParser:
     """
     Parses Kiro's AWS SSE stream format and converts to OpenAI format.
+    Uses AwsEventStreamParser for binary stream parsing.
     """
     
     @staticmethod
@@ -536,78 +705,32 @@ class KiroStreamParser:
         """
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(datetime.now(timezone.utc).timestamp())
+        parser = AwsEventStreamParser()
         
-        accumulated_content = ""
-        accumulated_tool_calls = []
-        finish_reason = None
+        async for chunk in response.aiter_bytes():
+            events = parser.feed(chunk)
+            
+            for event in events:
+                if event["type"] == "content":
+                    yield {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": event["data"]},
+                            "finish_reason": None
+                        }]
+                    }
         
-        async for line in response.aiter_lines():
-            if not line.strip():
-                continue
-            
-            # Parse AWS SSE format
-            if line.startswith(":"):
-                continue  # Comment
-            
-            # Try to extract JSON from the line
-            # Kiro uses a custom SSE format with binary headers
-            try:
-                # Look for JSON content
-                json_match = re.search(r'\{.*\}', line)
-                if json_match:
-                    data = json.loads(json_match.group())
-                    
-                    # Extract content from various Kiro event types
-                    if "assistantResponseEvent" in data:
-                        event = data["assistantResponseEvent"]
-                        
-                        if "contentBlockDelta" in event:
-                            delta = event["contentBlockDelta"]
-                            if "text" in delta:
-                                text = delta["text"]
-                                accumulated_content += text
-                                
-                                yield {
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": model,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"content": text},
-                                        "finish_reason": None
-                                    }]
-                                }
-                        
-                        elif "toolUse" in event:
-                            tool_use = event["toolUse"]
-                            # Handle tool call
-                            accumulated_tool_calls.append({
-                                "id": tool_use.get("toolUseId", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": tool_use.get("name", ""),
-                                    "arguments": json.dumps(tool_use.get("input", {}))
-                                }
-                            })
-                        
-                        elif "messageStop" in event:
-                            stop_reason = event["messageStop"].get("stopReason", "end_turn")
-                            if stop_reason == "tool_use":
-                                finish_reason = "tool_calls"
-                            else:
-                                finish_reason = "stop"
-                
-            except json.JSONDecodeError:
-                continue
-            except Exception as e:
-                lib_logger.debug(f"Error parsing Kiro stream line: {e}")
-                continue
+        # Get any tool calls
+        tool_calls = parser.get_tool_calls()
         
         # Final chunk with finish_reason
         final_delta = {}
-        if accumulated_tool_calls:
-            final_delta["tool_calls"] = accumulated_tool_calls
+        if tool_calls:
+            final_delta["tool_calls"] = tool_calls
         
         yield {
             "id": completion_id,
@@ -617,7 +740,7 @@ class KiroStreamParser:
             "choices": [{
                 "index": 0,
                 "delta": final_delta,
-                "finish_reason": finish_reason or "stop"
+                "finish_reason": "tool_calls" if tool_calls else "stop"
             }]
         }
 
