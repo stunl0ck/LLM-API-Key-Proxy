@@ -42,31 +42,36 @@ if not lib_logger.handlers:
 # =============================================================================
 
 # Kiro API endpoints by region
-KIRO_HOSTS = {
-    "us-east-1": "https://kiro.us-east-1.amazonaws.com",
-}
+# Use templates with region interpolation (matching jwadow's implementation)
+def _get_kiro_refresh_url(region: str) -> str:
+    return f"https://prod.{region}.auth.desktop.kiro.dev/refreshToken"
 
-KIRO_Q_HOSTS = {
-    "us-east-1": "https://q.us-east-1.amazonaws.com",
-}
+def _get_kiro_api_host(region: str) -> str:
+    return f"https://codewhisperer.{region}.amazonaws.com"
 
-KIRO_REFRESH_URLS = {
-    "us-east-1": "https://kiro.us-east-1.amazonaws.com/refresh-token",
-}
+def _get_kiro_q_host(region: str) -> str:
+    return f"https://q.{region}.amazonaws.com"
 
 # Token refresh threshold (seconds before expiry)
-TOKEN_REFRESH_THRESHOLD = 300  # 5 minutes
+TOKEN_REFRESH_THRESHOLD = 600  # 10 minutes (match jwadow)
 
 # Model ID mappings (OpenAI model name -> Kiro internal model ID)
+# Updated to match jwadow's MODEL_MAPPING
 KIRO_MODEL_MAPPING = {
+    # Claude Opus 4.5 - top model
     "claude-opus-4-5": "claude-opus-4.5",
     "claude-opus-4-5-20251101": "claude-opus-4.5",
-    "claude-sonnet-4-5": "claude-sonnet-4.5",
-    "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-    "claude-sonnet-4": "claude-sonnet-4",
-    "claude-sonnet-4-20250514": "claude-sonnet-4",
+    # Claude Haiku 4.5 - fast model
     "claude-haiku-4-5": "claude-haiku-4.5",
-    "claude-3-7-sonnet-20250219": "claude-3.7-sonnet",
+    "claude-haiku-4.5": "claude-haiku-4.5",
+    # Claude Sonnet 4.5 - improved model
+    "claude-sonnet-4-5": "CLAUDE_SONNET_4_5_20250929_V1_0",
+    "claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0",
+    # Claude Sonnet 4 - balanced model
+    "claude-sonnet-4": "CLAUDE_SONNET_4_20250514_V1_0",
+    "claude-sonnet-4-20250514": "CLAUDE_SONNET_4_20250514_V1_0",
+    # Claude 3.7 Sonnet - legacy
+    "claude-3-7-sonnet-20250219": "CLAUDE_3_7_SONNET_20250219_V1_0",
 }
 
 # Available models for /v1/models endpoint
@@ -174,15 +179,15 @@ class KiroAuthManager:
     
     @property
     def refresh_url(self) -> str:
-        return KIRO_REFRESH_URLS.get(self.credentials.region, KIRO_REFRESH_URLS["us-east-1"])
+        return _get_kiro_refresh_url(self.credentials.region)
     
     @property
     def api_host(self) -> str:
-        return KIRO_HOSTS.get(self.credentials.region, KIRO_HOSTS["us-east-1"])
+        return _get_kiro_api_host(self.credentials.region)
     
     @property
     def q_host(self) -> str:
-        return KIRO_Q_HOSTS.get(self.credentials.region, KIRO_Q_HOSTS["us-east-1"])
+        return _get_kiro_q_host(self.credentials.region)
     
     @property
     def profile_arn(self) -> Optional[str]:
