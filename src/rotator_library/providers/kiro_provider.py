@@ -853,24 +853,8 @@ class KiroProvider(ProviderInterface):
     
     def _to_litellm_chunk(self, chunk: Dict) -> litellm.ModelResponse:
         """Convert chunk dict to litellm ModelResponse."""
-        # Create a minimal ModelResponse for streaming
-        return litellm.ModelResponse(
-            id=chunk.get("id", ""),
-            object=chunk.get("object", "chat.completion.chunk"),
-            created=chunk.get("created", 0),
-            model=chunk.get("model", ""),
-            choices=[
-                litellm.Choices(
-                    index=0,
-                    delta=litellm.Delta(
-                        content=chunk.get("choices", [{}])[0].get("delta", {}).get("content"),
-                        role="assistant" if chunk.get("choices", [{}])[0].get("delta", {}).get("content") else None,
-                        tool_calls=chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls")
-                    ),
-                    finish_reason=chunk.get("choices", [{}])[0].get("finish_reason")
-                )
-            ]
-        )
+        # Pass the dict directly - ModelResponse accepts dict-based structure
+        return litellm.ModelResponse(**chunk)
     
     def _combine_chunks(self, chunks: List, model: str) -> litellm.ModelResponse:
         """Combine streaming chunks into a single response."""
@@ -881,40 +865,44 @@ class KiroProvider(ProviderInterface):
         for chunk in chunks:
             if hasattr(chunk, 'choices') and chunk.choices:
                 choice = chunk.choices[0]
-                if hasattr(choice, 'delta'):
-                    if choice.delta.content:
-                        content_parts.append(choice.delta.content)
-                    if choice.delta.tool_calls:
-                        tool_calls.extend(choice.delta.tool_calls)
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
+                # Access delta safely - it might be a dict or an object
+                delta = getattr(choice, 'delta', None)
+                if delta:
+                    delta_content = getattr(delta, 'content', None) or (delta.get('content') if isinstance(delta, dict) else None)
+                    if delta_content:
+                        content_parts.append(delta_content)
+                    delta_tool_calls = getattr(delta, 'tool_calls', None) or (delta.get('tool_calls') if isinstance(delta, dict) else None)
+                    if delta_tool_calls:
+                        tool_calls.extend(delta_tool_calls)
+                fr = getattr(choice, 'finish_reason', None)
+                if fr:
+                    finish_reason = fr
         
         content = "".join(content_parts)
         
-        message = litellm.Message(
-            content=content,
-            role="assistant",
-            tool_calls=tool_calls if tool_calls else None
-        )
+        # Build response dict
+        response_dict = {
+            "id": chunks[0].id if chunks and hasattr(chunks[0], 'id') else f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion",
+            "created": chunks[0].created if chunks and hasattr(chunks[0], 'created') else int(datetime.now(timezone.utc).timestamp()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls if tool_calls else None
+                },
+                "finish_reason": finish_reason
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
         
-        return litellm.ModelResponse(
-            id=chunks[0].id if chunks else f"chatcmpl-{uuid.uuid4().hex[:12]}",
-            object="chat.completion",
-            created=chunks[0].created if chunks else int(datetime.now(timezone.utc).timestamp()),
-            model=model,
-            choices=[
-                litellm.Choices(
-                    index=0,
-                    message=message,
-                    finish_reason=finish_reason
-                )
-            ],
-            usage=litellm.Usage(
-                prompt_tokens=0,  # Kiro doesn't provide this
-                completion_tokens=0,
-                total_tokens=0
-            )
-        )
+        return litellm.ModelResponse(**response_dict)
     
     def get_credential_tier_name(self, credential: str) -> Optional[str]:
         """Get tier name for credential."""
