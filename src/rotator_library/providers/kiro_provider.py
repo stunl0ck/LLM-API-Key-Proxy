@@ -757,16 +757,16 @@ class KiroProvider(ProviderInterface):
         """
         Handle chat completion request via Kiro API.
         """
+        credential_path = kwargs.pop("credential_identifier", "")
         model = kwargs.get("model", "")
         messages = kwargs.get("messages", [])
         tools = kwargs.get("tools")
         stream = kwargs.get("stream", False)
-        api_key = kwargs.get("api_key", "")  # This is the credential identifier
         
         # Get auth manager
-        auth = self._get_auth_manager(api_key)
+        auth = self._get_auth_manager(credential_path)
         if not auth:
-            raise ValueError(f"No auth manager for credential: {api_key}")
+            raise ValueError(f"No auth manager for credential: {credential_path}")
         
         # Get access token
         access_token = await auth.get_access_token()
