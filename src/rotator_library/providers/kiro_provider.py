@@ -713,13 +713,13 @@ class KiroStreamParser:
             chunk_count += 1
             # Debug: log first chunk to see raw format
             if chunk_count == 1:
-                lib_logger.debug(f"Kiro raw chunk (first 500 bytes): {chunk[:500]!r}")
+                lib_logger.info(f"Kiro raw chunk (first 500 bytes): {chunk[:500]!r}")
             
             events = parser.feed(chunk)
             
             for event in events:
                 event_count += 1
-                lib_logger.debug(f"Kiro event #{event_count}: {event}")
+                lib_logger.info(f"Kiro event #{event_count}: {event}")
                 
                 if event["type"] == "content":
                     yield {
@@ -734,7 +734,7 @@ class KiroStreamParser:
                         }]
                     }
         
-        lib_logger.debug(f"Kiro stream finished: {chunk_count} chunks, {event_count} events parsed")
+        lib_logger.info(f"Kiro stream finished: {chunk_count} chunks, {event_count} events parsed")
         
         # Get any tool calls
         tool_calls = parser.get_tool_calls()
