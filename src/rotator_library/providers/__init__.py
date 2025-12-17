@@ -114,6 +114,7 @@ def _register_providers():
                 "qwen_code",
                 "gemini_cli",
                 "antigravity",
+                "kiro",
             ]:
                 continue
 
