@@ -927,11 +927,17 @@ class KiroProvider(ProviderInterface):
             profile_arn=profile_arn
         )
         
-        # Make request
+        # Make request with required Kiro headers (matches jwadow gateway)
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
             "Accept": "application/vnd.amazon.eventstream" if stream else "application/json",
+            "User-Agent": "aws-sdk-js/1.0.27 ua/2.1 api/codewhispererstreaming#1.0.27 m/E KiroMirrowel-1.0",
+            "x-amz-user-agent": "aws-sdk-js/1.0.27 KiroMirrowel-1.0",
+            "x-amzn-codewhisperer-optout": "true",
+            "x-amzn-kiro-agent-mode": "vibe",
+            "amz-sdk-invocation-id": str(uuid.uuid4()),
+            "amz-sdk-request": "attempt=1; max=3",
         }
         
         api_url = f"{auth.q_host}/generateAssistantResponse"
