@@ -928,9 +928,9 @@ class KiroProvider(ProviderInterface):
             "Accept": "application/vnd.amazon.eventstream" if stream else "application/json",
         }
         
-        api_url = f"{auth.q_host}/api/conversations/chat"
+        api_url = f"{auth.q_host}/generateAssistantResponse"
         
-        lib_logger.debug(f"Kiro API request to {api_url}, model={model}, stream={stream}")
+        lib_logger.info(f"Kiro API request to {api_url}, model={model}, stream={stream}")
         
         if stream:
             return self._stream_completion(client, api_url, headers, payload, model, auth)
