@@ -940,7 +940,7 @@ class KiroProvider(ProviderInterface):
             "amz-sdk-request": "attempt=1; max=3",
         }
         
-        api_url = f"{auth.q_host}/generateAssistantResponse"
+        api_url = f"{auth.api_host}/generateAssistantResponse"
         
         lib_logger.info(f"Kiro API request to {api_url}, model={model}, stream={stream}")
         
