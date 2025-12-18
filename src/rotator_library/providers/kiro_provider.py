@@ -490,26 +490,36 @@ class KiroConverter:
         # Convert messages
         history, current_message = KiroConverter.convert_messages(messages, model_id)
         
+        # Ensure origin is set
+        if "origin" not in current_message:
+            current_message["origin"] = "AI_EDITOR"
+        
         # Convert tools (with limits)
         kiro_tools = KiroConverter.convert_tools(tools)
         if kiro_tools:
             if "userInputMessageContext" not in current_message:
                 current_message["userInputMessageContext"] = {}
             current_message["userInputMessageContext"]["tools"] = kiro_tools
+        else:
+            # Ensure tools array exists even if empty
+            if "userInputMessageContext" not in current_message:
+                current_message["userInputMessageContext"] = {}
+            if "tools" not in current_message["userInputMessageContext"]:
+                current_message["userInputMessageContext"]["tools"] = []
         
-        # Build payload
+        # Build payload with required fields
         payload = {
             "conversationState": {
+                "agentContinuationId": str(uuid.uuid4()),
+                "agentTaskType": "vibe",
                 "chatTriggerType": "MANUAL",
                 "conversationId": conv_id,
                 "currentMessage": {
                     "userInputMessage": current_message
-                }
+                },
+                "history": history if history else []
             }
         }
-        
-        if history:
-            payload["conversationState"]["history"] = history
         
         if profile_arn:
             payload["profileArn"] = profile_arn
